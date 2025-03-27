@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 sv-parser = "0.13.3"
+rouille = "3.6.2"

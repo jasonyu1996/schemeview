@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+    <header>
+        <title>SchemeView</title>
+        <link rel="stylesheet" href="style.css">
+        <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.5.0/dist/svg-pan-zoom.min.js"></script>
+    </header>
+    <body>
+        <h1>SchemeView</h1>
+        <p>
+            <b>Path:</b>
+            <span id="module-path"></span>
+        </p>
+        <div>
+            <button onclick="javascript:scheme_view_back()">Back</button>
+        </div>
+        <div id="graph-view"></div>
+        <script>
+            var mouse_moved = false;
+
+            function scheme_view_set_path(context, path) {
+                context.current_path = path;
+                context.path_box.innerHTML = path;
+                let svg_url = "graph/" + path;
+                fetch(svg_url)
+                    .then(response => response.text())
+                    .then(data => {
+                        let parser = new DOMParser();
+                        let svgElement = parser.parseFromString(data, "image/svg+xml").documentElement;
+                        svgElement.id = "graphSVG"
+                        svgElement.setAttribute("width", "600");
+                        svgElement.setAttribute("height", "400");
+                        svgElement.addEventListener("mousedown", function() {
+                            mouse_moved = false;
+                        });
+                        svgElement.addEventListener("mousemove", function() {
+                            mouse_moved = true;
+                        });
+                        context.graph_view.innerHTML = "";
+                        context.graph_view.appendChild(svgElement);
+                        svgPanZoom("#graphSVG", {
+                            zoomEnabled: true,
+                            controlIconsEnabled: true,
+                            fit: true,
+                            center: true
+                        });
+                    })
+                    .catch(error => console.error("Error loading graph:", error));
+            }
+
+            function scheme_view_goto(module_path) {
+                if (!mouse_moved) {
+                    scheme_view_set_path(window.scheme_view_context, module_path);
+                }
+            }
+
+            function scheme_view_back() {
+                let context = window.scheme_view_context;
+                let pos_dot = context.current_path.lastIndexOf(".");
+                if (pos_dot >= 0) {
+                    scheme_view_set_path(context, context.current_path.substring(0, pos_dot));
+                }
+            }
+
+            function scheme_view_init(graph_view, path_box) {
+                let scheme_view_context = {
+                    graph_view : graph_view,
+                    path_box : path_box,
+                    current_path : "Top"
+                };
+                window.scheme_view_context = scheme_view_context;
+                scheme_view_set_path(scheme_view_context, "Top");
+            }
+
+            let graph_view = document.getElementById("graph-view");
+            let path_box = document.getElementById("module-path");
+
+            scheme_view_init(graph_view, path_box);
+        </script>
+    </body>
+</html>
