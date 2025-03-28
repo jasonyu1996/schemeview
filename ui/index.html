@@ -14,13 +14,11 @@
         <div>
             <button onclick="javascript:scheme_view_back()">Back</button>
         </div>
-        <div id="graph-view"></div>
+        <div id="graph-view" style="width: 90vw; height: 80vh; overflow: hidden;"></div>
         <script>
             var mouse_moved = false;
 
             function scheme_view_set_path(context, path) {
-                context.current_path = path;
-                context.path_box.innerHTML = path;
                 let svg_url = "graph/" + path;
                 fetch(svg_url)
                     .then(response => response.text())
@@ -28,8 +26,9 @@
                         let parser = new DOMParser();
                         let svgElement = parser.parseFromString(data, "image/svg+xml").documentElement;
                         svgElement.id = "graphSVG"
-                        svgElement.setAttribute("width", "600");
-                        svgElement.setAttribute("height", "400");
+                        svgElement.setAttribute("width", "100%");
+                        svgElement.setAttribute("height", "100%");
+                        svgElement.setAttribute("viewBox", svgElement.getAttribute("viewBox") || "0 0 600 400");
                         svgElement.addEventListener("mousedown", function() {
                             mouse_moved = false;
                         });
@@ -44,6 +43,8 @@
                             fit: true,
                             center: true
                         });
+                        context.current_path = path;
+                        context.path_box.innerHTML = path;
                     })
                     .catch(error => console.error("Error loading graph:", error));
             }
