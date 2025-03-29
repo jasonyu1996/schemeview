@@ -1,0 +1,9 @@
+#graph-view {
+    width: 90vw;
+    height: 80vh;
+    overflow: hidden;
+    margin-left: auto;
+    margin-right: auto;
+    margin-top: 20pt;
+    margin-bottom: 20pt;
+}

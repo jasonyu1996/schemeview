@@ -1,20 +1,26 @@
-use std::{collections::HashMap, fmt::format, io::Write};
+use std::{collections::HashMap, fmt::format, io::Write, path::Path};
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize, Deserialize)]
 pub struct Port {
     pub is_output : bool
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Instance {
     pub module_name : String,
     pub instance_name : String,
     pub connections : Vec<(String, String)>
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Module {
     pub name : String,
     pub ports : HashMap<String, Port>,
     pub instances : Vec<Instance>
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Design {
     pub modules : HashMap<String, Module>,
 }
@@ -127,8 +133,8 @@ pub mod design_build {
         }
     }
 
-    pub fn parse_file<T : AsRef<Path>>(design : &mut Design, path: T) {
-        match parse_sv(path, &HashMap::new(), &[PathBuf::from("../capstone-ariane/core/include")] as &[PathBuf],
+    pub fn parse_file<T : AsRef<Path>, U : AsRef<Path>>(design : &mut Design, includes : &[U], path: T) {
+        match parse_sv(path, &HashMap::new(), includes,
                             false, false) {
             Ok((syntax_tree, _)) => {
                 let mut current_module : Option<Module> = None;
@@ -185,10 +191,15 @@ pub fn new_design() -> Design {
     }
 }
 
+struct Wire<'a> {
+    to : Vec<(u32, &'a str, &'a str)>,
+    from : Vec<(u32, &'a str, &'a str)>
+}
+
 struct GraphGenContext<'a, T : Write> {
     out : &'a mut T,
     last_index_cluster : u32,
-    last_index : u32,
+    ports : Vec<Wire<'a>>,
     indent_level : u32,
     current_path : String,
     path_segs : Vec<usize>
@@ -198,7 +209,7 @@ impl<'a, T : Write> GraphGenContext<'a, T> {
     pub fn new(out : &'a mut T, current_path : String) -> Self {
         Self {
             out,
-            last_index : 0,
+            ports : vec![],
             last_index_cluster : 0,
             indent_level : 0,
             current_path,
@@ -207,9 +218,28 @@ impl<'a, T : Write> GraphGenContext<'a, T> {
     }
 
     pub fn alloc_node(&mut self) -> u32 {
-        let r = self.last_index;
-        self.last_index += 1;
-        r
+        let r = self.ports.len();
+        self.ports.push(Wire { to : vec![], from : vec![] });
+        r as u32
+    }
+
+    pub fn get_node(&self, id : u32) -> &Wire<'a> {
+        &self.ports[id as usize]
+    }
+
+    pub fn get_node_mut(&mut self, id : u32) -> &mut Wire<'a> {
+        &mut self.ports[id as usize]
+    }
+
+    pub fn ports_iter(&self) -> std::slice::Iter<'_, Wire> {
+        self.ports.iter()
+    }
+
+    pub fn connect_nodes(&mut self, id_from : u32, instance_from : &'a str, port_from : &'a str,
+                                    id_to : u32, instance_to : &'a str, port_to : &'a str)
+    {
+        self.get_node_mut(id_from).to.push((id_to, instance_to, port_to));
+        self.get_node_mut(id_to).from.push((id_from, instance_from, port_from));
     }
 
     pub fn alloc_cluster(&mut self) -> u32 {
@@ -243,14 +273,21 @@ impl<'a, T : Write> GraphGenContext<'a, T> {
         let len = self.path_segs.pop().unwrap();
         self.current_path.truncate(len);
     }
+
+    pub fn last_seg(&self, offset : usize) -> Option<&str> {
+        let slen = self.path_segs.len();
+        if slen <= offset {
+            None
+        } else if offset == 0 {
+            // + 1 to remove the period (.)
+            Some(&self.current_path[(self.path_segs[slen - 1] + 1)..])
+        } else {
+            Some(&self.current_path[(self.path_segs[slen - offset - 1] + 1)..self.path_segs[slen - offset]])
+        }
+    }
 }
 
-struct Wire<'a> {
-    to : Vec<(u32, &'a str)>,
-    from : Vec<(u32, &'a str)>
-}
-
-fn generate_module_instance<T : Write>(context : &mut GraphGenContext<'_, T>, design : &Design, module : &Module, instance_name : &str, depth_lim : u32) -> HashMap<String, u32>{
+fn generate_module_instance<'d, T : Write>(context : &mut GraphGenContext<'d, T>, design : &'d Design, module : &'d Module, instance_name : &'d str, depth_lim : u32) -> HashMap<String, u32>{
     if depth_lim == 0 {
         return HashMap::new();
     }
@@ -266,6 +303,7 @@ fn generate_module_instance<T : Write>(context : &mut GraphGenContext<'_, T>, de
     let fill_color = if depth_lim % 2 == 0 { "fillcolor = lightgrey;" } else { "fillcolor = white;" };
     context.print_line(fill_color);
     context.print_line(&format!("label = <<b>{}</b>: {}>;", module.name, instance_name));
+    context.print_line(&format!("tooltip = \"{}: {}\";", &module.name, &context.current_path));
 
     /* Generate the ports */
     let mut input_cnt = 0;
@@ -322,15 +360,21 @@ fn generate_module_instance<T : Write>(context : &mut GraphGenContext<'_, T>, de
                     /* check if conn_name matches a port of the outside module */
                     if let Some(ex_port_id) = port_nodes.get(conn_name) {
                         if instance_module.ports.get(port_name).unwrap().is_output {
-                            context.print_line(&format!("w{} -> w{} [tooltip=\"{} -> {}\"];", *port_id, *ex_port_id, port_name, conn_name));
+                            context.print_line(&format!("w{} -> w{} [tooltip=\"{}.{} -> {}.{}\"];",
+                                *port_id, *ex_port_id, &instance.instance_name, port_name, instance_name, conn_name));
+                            context.connect_nodes(*port_id, &instance.instance_name, port_name,
+                                *ex_port_id, instance_name, conn_name);
                         } else {
-                            context.print_line(&format!("w{} -> w{} [tooltip=\"{} -> {}\"];", *ex_port_id, *port_id, conn_name, port_name));
+                            context.print_line(&format!("w{} -> w{} [tooltip=\"{}.{} -> {}.{}\"];",
+                                *ex_port_id, *port_id, instance_name, conn_name, &instance.instance_name, port_name));
+                            context.connect_nodes(*ex_port_id, instance_name, conn_name,
+                                *port_id, &instance.instance_name, port_name);
                         }
                     } else if let Some(wire) = wires.get_mut(conn_name) {
                         if instance_module.ports.get(port_name).unwrap().is_output {
-                            wire.from.push((*port_id, port_name));
+                            wire.from.push((*port_id, &instance.instance_name, port_name));
                         } else {
-                            wire.to.push((*port_id, port_name));
+                            wire.to.push((*port_id, &instance.instance_name, port_name));
                         }
                     } else {
                         /* create new wire */
@@ -340,14 +384,17 @@ fn generate_module_instance<T : Write>(context : &mut GraphGenContext<'_, T>, de
             }
         }
     }
-    for (_, wire) in &wires {
+    for (_, wire) in wires {
         if !wire.to.is_empty() && !wire.from.is_empty() {
             // let id = context.alloc_node();
             // context.print_line(&format!("w{} [shape=point];", id));
-            for (from_node, from_name) in &wire.from {
+            for (from_node, from_instance, from_name) in wire.from {
                 // context.print_line(&format!("w{} -> w{};", *from_node, id));
-                for (to_node, to_name) in &wire.to {
-                    context.print_line(&format!("w{} -> w{} [tooltip=\"{} -> {}\"];", *from_node, *to_node, *from_name, *to_name));
+                for (to_node, to_instance, to_name) in &wire.to {
+                    context.print_line(&format!("w{} -> w{} [tooltip=\"{}.{} -> {}.{}\"];",
+                        from_node, to_node, from_instance, from_name, to_instance, to_name));
+                    context.connect_nodes(from_node, from_instance, from_name,
+                        *to_node, *to_instance, *to_name);
                 }
             }
         }
@@ -359,23 +406,7 @@ fn generate_module_instance<T : Write>(context : &mut GraphGenContext<'_, T>, de
     port_nodes
 }
 
-const GRAPH_DEPTH_LIM : u32 = 8;
-pub fn generate_graph<T : Write>(design : &Design, top_module_name : &str, out : &mut T) {
-    match design.modules.get(top_module_name) {
-        Some(top_module) => {
-            let mut context = GraphGenContext::new(out, "Top".to_string());
-            context.print_line("digraph {");
-            context.inc_indent(1);
-            context.print_line("layout = fdp;");
-            let _ = generate_module_instance(&mut context, design, top_module, "Top", GRAPH_DEPTH_LIM);
-            context.dec_indent(1);
-            context.print_line("}");
-        }
-        None => eprintln!("Top module {} not found!", top_module_name)
-    }
-}
-
-pub fn generate_graph_part<T : Write>(design : &Design, top_module : &Module, module_path : &str, depth_lim : u32, out : &mut T) {
+pub fn generate_graph_part<'d, 'm, T : Write>(design : &'d Design, top_module : &'m Module, module_path : &str, depth_lim : u32, out : &mut T) where 'm : 'd {
     let mut context = GraphGenContext::new(out, module_path.to_string());
     let top_instance_name = module_path.rsplitn(2, ".").last().unwrap();
     context.print_line("digraph {");
@@ -383,6 +414,31 @@ pub fn generate_graph_part<T : Write>(design : &Design, top_module : &Module, mo
     context.print_line("layout = fdp;");
     context.print_line("splines = true;");
     let _ = generate_module_instance(&mut context, design, top_module, top_instance_name, depth_lim);
+    // generate tool tips
+    let ports = std::mem::take(&mut context.ports);
+    for (id, port) in ports.iter().enumerate() {
+        fn build_instance_list<'a, 'b, T : Iterator<Item = &'b (u32, &'a str, &'a str)>>(mut v : T) -> String where 'a : 'b {
+            let mut res = String::new();
+            if let Some((_, inst_name, _)) = v.next() {
+                res.push_str(*inst_name);
+                for (_, inst_name, _) in v {
+                    res.push_str(", ");
+                    res.push_str(*inst_name);
+                }
+            }
+            res
+        }
+        let tooltip_s =
+            match (port.from.is_empty(), port.to.is_empty()) {
+                (true, true) => "(unconnected)",
+                (true, false) => &format!("To: {}", build_instance_list(port.to.iter())),
+                (false, true) => &format!("From: {}", build_instance_list(port.from.iter())),
+                (false, false) => &format!("To: {}; From: {}",
+                    build_instance_list(port.to.iter()),
+                    build_instance_list(port.from.iter()))
+            };
+        context.print_line(&format!("w{} [tooltip=\"{}\"]", id, tooltip_s));
+    }
     context.dec_indent(1);
     context.print_line("}");
 }
@@ -414,4 +470,19 @@ pub fn locate_module<'a>(design : &'a Design, top_module_name : &str, module_pat
     } else {
         None
     }
+}
+
+
+// Serialisation
+
+pub fn save_to_archive<T : AsRef<Path>>(design : &Design, out_file : T) -> std::io::Result<()> {
+    let mut out = std::fs::File::create(out_file)?;
+    serde_json::to_writer(&mut out, &design)?;
+    Ok(())
+}
+
+pub fn load_from_archive<T : AsRef<Path>>(in_file : T) -> std::io::Result<Design> {
+    let mut in_f = std::fs::File::open(in_file)?;
+    let v = serde_json::from_reader(&mut in_f)?;
+    Ok(v)
 }
