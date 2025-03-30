@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::format, io::Write, path::Path};
+use std::{collections::HashMap, io::Write, path::Path};
 use serde::{Serialize, Deserialize};
 
 #[derive(Serialize, Deserialize)]
@@ -408,7 +408,7 @@ fn generate_module_instance<'d, T : Write>(context : &mut GraphGenContext<'d, T>
 
 pub fn generate_graph_part<'d, 'm, T : Write>(design : &'d Design, top_module : &'m Module, module_path : &str, depth_lim : u32, out : &mut T) where 'm : 'd {
     let mut context = GraphGenContext::new(out, module_path.to_string());
-    let top_instance_name = module_path.rsplitn(2, ".").last().unwrap();
+    let top_instance_name = module_path.rsplitn(2, ".").next().unwrap();
     context.print_line("digraph {");
     context.inc_indent(1);
     context.print_line("layout = fdp;");
